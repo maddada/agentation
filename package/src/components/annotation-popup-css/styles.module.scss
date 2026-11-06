@@ -231,11 +231,11 @@
 
 .screenshot {
   display: block;
-  width: 100%;
-  max-height: 120px;
-  object-fit: contain;
-  object-position: left center;
-  margin-bottom: 0.5rem;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 150px;
+  margin: 0 auto 0.5rem;
   border-radius: 0.25rem;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.08);
