@@ -90,6 +90,7 @@ import {
 
 import type { Annotation } from "../../types";
 import { generateOutput, generateOutputHeader } from "../../utils/generate-output";
+import { captureAnnotationScreenshot } from "../../utils/annotation-screenshot";
 import { captureElementAttributes, DEFAULT_IDENTIFYING_ATTRIBUTES } from "../../utils/element-attributes";
 import { formatCopyOutput, type CopyFormat } from "../../utils/copy-format";
 import { copyTextToClipboard } from "../../utils/clipboard";
@@ -362,6 +363,14 @@ export type PageFeedbackToolbarCSSProps = {
   onOpenSource?: (sourceFile: string) => void;
   /** Mount inside a host modal/popover to share its focus and top layer. Defaults to document.body. */
   portalContainer?: HTMLElement | ShadowRoot | null;
+  /** Capture a picture of each picked element, text or area with its annotation. Defaults to true. */
+  captureScreenshots?: boolean;
+  /**
+   * How Send to Agent names an annotation's screenshot in its markdown, for a host that delivers
+   * the pictures with the text (for example an attachment reference). Receives the annotation and
+   * its 1-based picture number. Without it the output does not mention screenshots.
+   */
+  screenshotReference?: (annotation: Annotation, index: number) => string | null | undefined;
 };
 
 /** Alias for PageFeedbackToolbarCSSProps */
@@ -411,6 +420,8 @@ function PageFeedbackToolbarForRoute({
   onSessionCreated,
   webhookUrl,
   className: userClassName,
+  captureScreenshots = true,
+  screenshotReference,
 }: PageFeedbackToolbarCSSProps & {
   pathname: string;
   activeState: [boolean, Dispatch<SetStateAction<boolean>>];
@@ -2637,6 +2648,49 @@ function PageFeedbackToolbarForRoute({
     [webhookUrl, settings.webhookUrl, settings.webhooksEnabled],
   );
 
+  // Screenshots: one capture per picked selection, started as soon as it is
+  // picked (before the note is written) so the picture shows the page as the
+  // user saw it. A capture that finishes after the note was added fills in
+  // the saved annotation.
+  const screenshotJobs = useRef(new Map<string, Promise<string | null>>());
+  const [pendingScreenshot, setPendingScreenshot] = useState<{ id: string; src: string } | null>(null);
+  useEffect(() => {
+    const pending = pendingAnnotation;
+    if (!captureScreenshots || !pending || pending.isSubmitted || pending.frame) return;
+    if (!pending.boundingBox || screenshotJobs.current.has(pending.id)) return;
+    const toViewport = (box: { x: number; y: number; width: number; height: number }, fixed: boolean) => ({
+      x: box.x,
+      y: fixed ? box.y : box.y - window.scrollY,
+      width: box.width,
+      height: box.height,
+    });
+    const rect = toViewport(pending.boundingBox, !!pending.isFixed);
+    const highlights = pending.elementBoundingBoxes?.map((box) => toViewport(box, false));
+    const id = pending.id;
+    const job = captureAnnotationScreenshot({ rect, highlights }).catch(() => null);
+    screenshotJobs.current.set(id, job);
+    job.then((src) => {
+      if (!src || !routeAlive.current) return;
+      setPendingScreenshot((current) => (current && current.id !== id ? current : { id, src }));
+      setAnnotations((previous) => previous.some((a) => a.id === id && !a.screenshot)
+        ? previous.map((a) => (a.id === id && !a.screenshot ? { ...a, screenshot: src } : a))
+        : previous);
+    });
+  }, [pendingAnnotation, captureScreenshots]);
+
+  /** The annotations with every screenshot that is still being taken, waited for (up to 5s). */
+  const withScreenshots = useCallback(async (list: Annotation[]): Promise<Annotation[]> => {
+    if (!captureScreenshots) return list;
+    const timeout = new Promise<null>((resolve) => originalSetTimeout(() => resolve(null), 5000));
+    return Promise.all(list.map(async (annotation) => {
+      if (annotation.screenshot) return annotation;
+      const job = screenshotJobs.current.get(annotation.id);
+      if (!job) return annotation;
+      const src = await Promise.race([job, timeout]);
+      return src ? { ...annotation, screenshot: src } : annotation;
+    }));
+  }, [captureScreenshots]);
+
   // Add annotation
   const addAnnotation = useCallback(
     (comment: string) => {
@@ -2665,6 +2719,7 @@ function PageFeedbackToolbarForRoute({
         attributes: pendingAnnotation.attributes,
         frame: pendingAnnotation.frame,
         elementBoundingBoxes: pendingAnnotation.elementBoundingBoxes,
+        screenshot: pendingScreenshot?.id === pendingAnnotation.id ? pendingScreenshot.src : undefined,
         // Protocol fields for server sync
         ...(endpoint && currentSessionId
           ? {
@@ -2728,6 +2783,7 @@ function PageFeedbackToolbarForRoute({
     },
     [
       pendingAnnotation,
+      pendingScreenshot,
       onAnnotationAdd,
       fireWebhook,
       endpoint,
@@ -3204,13 +3260,20 @@ function PageFeedbackToolbarForRoute({
           window.location.search +
           window.location.hash
         : pathname;
+    if (annotations.length === 0 && designPlacements.length === 0 && !rearrangeState) return;
+
+    // Start sending (arrow fades)
+    setSendState("sending");
+
+    // Send carries each annotation's screenshot; wait for any still being taken.
+    const sentAnnotations = await withScreenshots(annotations);
+    if (!sendAction.isCurrent(action)) return;
     let output = generateOutput(
-      annotations,
+      sentAnnotations,
       displayUrl,
       settings.outputDetail,
-      { appName },
+      { appName, screenshotReference },
     );
-    if (!output && designPlacements.length === 0 && !rearrangeState) return;
     if (!output) output = generateOutputHeader(displayUrl, appName);
 
     // Append design layout section if there are placements
@@ -3232,14 +3295,11 @@ function PageFeedbackToolbarForRoute({
       }
     }
 
-    // Start sending (arrow fades)
-    setSendState("sending");
-
     // A callback can throw or return a rejected promise. Treat that as failed
     // delivery so feedback is retained and the send control can recover.
     let callbackOk = true;
     try {
-      await onSubmit?.(output, annotations);
+      await onSubmit?.(output, sentAnnotations);
     } catch (error) {
       console.warn("[Agentation] Submit callback failed:", error);
       callbackOk = false;
@@ -3249,7 +3309,7 @@ function PageFeedbackToolbarForRoute({
 
     // Fire webhook and check result (force=true to bypass webhooksEnabled check for manual sends)
     const webhookOk = hasWebhookTarget
-      ? await fireWebhook("submit", { output, annotations, url: submissionUrl }, true)
+      ? await fireWebhook("submit", { output, annotations: sentAnnotations, url: submissionUrl }, true)
       : true;
     // Without a webhook target, onSubmit is the delivery mechanism — don't
     // report the webhook no-op as a failure.
@@ -3283,6 +3343,8 @@ function PageFeedbackToolbarForRoute({
     hasWebhookTarget,
     canSend,
     sendAction,
+    withScreenshots,
+    screenshotReference,
   ]);
 
   // Keep release listeners installed before a press. State-driven listener
@@ -4617,6 +4679,7 @@ function PageFeedbackToolbarForRoute({
                           ref={popupRef}
                           element={pendingAnnotation.element}
                           selectedText={pendingAnnotation.selectedText}
+                          screenshot={pendingScreenshot?.id === pendingAnnotation.id ? pendingScreenshot.src : undefined}
                           allowEmpty={typeof copyFormat === "object" && !!pendingAnnotation.attributes?.[copyFormat.attribute]}
                           onOpenSource={onOpenSource && pendingAnnotation.sourceFile
                             ? () => onOpenSource(pendingAnnotation.sourceFile!) : undefined}
@@ -4776,6 +4839,7 @@ function PageFeedbackToolbarForRoute({
             editorProps={cardAnnotation ? {
               element: cardAnnotation.element,
               selectedText: cardAnnotation.selectedText,
+              screenshot: cardAnnotation.screenshot,
               allowEmpty: typeof copyFormat === "object" && !!cardAnnotation.attributes?.[copyFormat.attribute],
               onOpenSource: onOpenSource && cardAnnotation.sourceFile
                 ? () => onOpenSource(cardAnnotation.sourceFile!) : undefined,

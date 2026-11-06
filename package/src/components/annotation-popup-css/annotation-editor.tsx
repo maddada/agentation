@@ -30,6 +30,7 @@ export type AnnotationEditorProps = Pick<
   | "element"
   | "timestamp"
   | "selectedText"
+  | "screenshot"
   | "placeholder"
   | "initialValue"
   | "submitLabel"
@@ -58,6 +59,7 @@ export const AnnotationEditor = forwardRef<
     element,
     timestamp,
     selectedText,
+    screenshot,
     placeholder = "What should change?",
     initialValue = "",
     submitLabel = "Add",
@@ -281,6 +283,16 @@ export const AnnotationEditor = forwardRef<
             </div>
           </div>
         </div>
+      )}
+
+      {screenshot && (
+        <img
+          className={styles.screenshot}
+          src={screenshot}
+          alt="Screenshot sent with this note"
+          title="This picture is sent with the note"
+          draggable={false}
+        />
       )}
 
       <div

@@ -8,3 +8,4 @@ mcp/.test-dist
 .env.*
 !.env.example
 .claude/settings.local.json
+dist-ghostex

@@ -33,8 +33,22 @@ export function saveAnnotations<T = Annotation>(pathname: string, annotations: T
   try {
     localStorage.setItem(getStorageKey(pathname), JSON.stringify(annotations));
   } catch {
-    // localStorage might be full or disabled
+    // localStorage might be full or disabled. Screenshots are the bulk of what
+    // is stored, so keep the notes themselves without their pictures.
+    try {
+      localStorage.setItem(getStorageKey(pathname), JSON.stringify(withoutScreenshots(annotations)));
+    } catch {
+      // ignore
+    }
   }
+}
+
+function withoutScreenshots<T>(annotations: T[]): T[] {
+  return annotations.map((annotation) => {
+    if (!annotation || typeof annotation !== "object" || !("screenshot" in annotation)) return annotation;
+    const { screenshot: _screenshot, ...rest } = annotation as T & { screenshot?: string };
+    return rest as T;
+  });
 }
 
 export function clearAnnotations(pathname: string): void {

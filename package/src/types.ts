@@ -29,6 +29,7 @@ export type Annotation = {
     boundingBox: { x: number; y: number; width: number; height: number };
   };
   drawingIndex?: number; // Index of linked draw stroke (if any)
+  screenshot?: string; // PNG data URL of the picked selection with some context, taken when it was picked
   elementBoundingBoxes?: Array<{
     x: number;
     y: number;

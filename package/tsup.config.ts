@@ -8,7 +8,7 @@ import type { Plugin } from "esbuild";
 const pkg = JSON.parse(fs.readFileSync("./package.json", "utf-8"));
 const VERSION = pkg.version;
 
-const scssModulesPlugin = (): Plugin => {
+export const scssModulesPlugin = (): Plugin => {
   return {
     name: "scss-modules",
     setup(build) {

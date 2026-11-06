@@ -35,7 +35,11 @@ export function generateOutput(
   annotations: Annotation[],
   pathname: string,
   detailLevel: OutputDetailLevel = "standard",
-  options: { appName?: string } = {},
+  options: {
+    appName?: string;
+    /** Names an annotation's screenshot (see `screenshotReference` on the toolbar). */
+    screenshotReference?: (annotation: Annotation, index: number) => string | null | undefined;
+  } = {},
 ): string {
   if (annotations.length === 0) return "";
 
@@ -61,12 +65,23 @@ export function generateOutput(
   }
   output += "\n";
 
+  let screenshotCount = 0;
+  const screenshotFor = (a: Annotation): string | undefined => {
+    if (!a.screenshot || !options.screenshotReference) return undefined;
+    const reference = options.screenshotReference(a, screenshotCount + 1);
+    if (!reference) return undefined;
+    screenshotCount += 1;
+    return reference;
+  };
+
   annotations.forEach((a, i) => {
+    const screenshot = screenshotFor(a);
     if (detailLevel === "compact") {
       output += `${i + 1}. **${a.element}**${a.sourceFile ? ` (${a.sourceFile})` : ""}: ${a.comment}`;
       if (a.selectedText) {
         output += ` (re: "${a.selectedText.slice(0, 30)}${a.selectedText.length > 30 ? "..." : ""}")`;
       }
+      if (screenshot) output += ` ${screenshot}`;
       output += "\n";
     } else if (detailLevel === "forensic") {
       output += `### ${i + 1}. ${a.element}\n`;
@@ -104,6 +119,7 @@ export function generateOutput(
       if (a.reactComponents) {
         output += `**React:** ${a.reactComponents}\n`;
       }
+      if (screenshot) output += `**Screenshot:** ${screenshot}\n`;
       output += `**Feedback:** ${a.comment}\n\n`;
     } else {
       // standard and detailed
@@ -129,6 +145,7 @@ export function generateOutput(
       if (detailLevel === "detailed" && a.nearbyText && !a.selectedText) {
         output += `**Context:** ${a.nearbyText.slice(0, 100)}\n`;
       }
+      if (screenshot) output += `**Screenshot:** ${screenshot}\n`;
       output += `**Feedback:** ${a.comment}\n\n`;
     }
   });

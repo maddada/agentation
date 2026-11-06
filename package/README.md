@@ -83,6 +83,29 @@ browser: create a test annotation and ask your agent to read
 | `copyFormat` | `"markdown"`, `"source"`, `"classes"`, or attribute option | `"markdown"` | Choose the Copy output; Send still receives structured markdown and annotations |
 | `onOpenSource` | `(sourceFile: string) => void` | - | Show Open in editor when source metadata is available |
 | `portalContainer` | `HTMLElement \| ShadowRoot \| null` | `document.body` | Place Agentation inside a host modal or popover's focus boundary |
+| `captureScreenshots` | `boolean` | `true` | Take a picture of each picked element, text or area (stored as `annotation.screenshot`, a PNG data URL) |
+| `screenshotReference` | `(annotation: Annotation, index: number) => string \| null` | - | How Send names an annotation's picture in its markdown (`**Screenshot:** …`); without it the output does not mention pictures |
+
+### Screenshots (maddada/agentation fork)
+
+When an element, text or area is picked, the toolbar renders that part of the
+page with some context around it, outlines the selection, and keeps the picture
+on the annotation as `screenshot`. The popup shows it while the note is written.
+`onSubmit` and `onAnnotationAdd` receive it, so a host can deliver the picture
+along with the text; `screenshotReference` lets the host name it in the
+markdown, for example as an attachment:
+
+```tsx
+<Agentation
+  onSubmit={(output, annotations) => deliver(output, annotations)}
+  screenshotReference={(annotation, n) => `[Image #${n}](${annotation.id})`}
+/>
+```
+
+Pictures are rendered from the DOM (modern-screenshot), so cross-origin images
+without CORS headers and the inside of cross-origin frames come out blank.
+Copy still puts only text on the clipboard. `pnpm build:ghostex` builds the
+single self-contained script Ghostex bundles.
 
 ### App identity, selectors and copying
 

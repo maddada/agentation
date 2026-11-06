@@ -22,6 +22,8 @@ export interface AnnotationPopupCSSProps {
   timestamp?: string;
   /** Optional selected/highlighted text */
   selectedText?: string;
+  /** Picture of the selection (data URL) that goes out with the annotation */
+  screenshot?: string;
   /** Placeholder text for the textarea */
   placeholder?: string;
   /** Initial value for textarea (for edit mode) */
@@ -67,6 +69,7 @@ export const AnnotationPopupCSS = forwardRef<AnnotationPopupCSSHandle, Annotatio
       element,
       timestamp,
       selectedText,
+      screenshot,
       placeholder = "What should change?",
       initialValue = "",
       submitLabel = "Add",
@@ -174,6 +177,7 @@ export const AnnotationPopupCSS = forwardRef<AnnotationPopupCSSHandle, Annotatio
           element={element}
           timestamp={timestamp}
           selectedText={selectedText}
+          screenshot={screenshot}
           placeholder={placeholder}
           initialValue={initialValue}
           submitLabel={submitLabel}
