@@ -7,7 +7,8 @@ import { scssModulesPlugin } from "./tsup.config";
 // Built from a clean checkout so the commit in its header is what it contains.
 const pkg = JSON.parse(fs.readFileSync("./package.json", "utf-8"));
 const commit = execSync("git rev-parse HEAD").toString().trim();
-const dirty = execSync("git status --porcelain -- .").toString().trim() !== "";
+// tsup compiles this config to a temporary `*.bundled_*.mjs` beside it while it runs.
+const dirty = execSync("git status --porcelain -- . ':!*.bundled_*'").toString().trim() !== "";
 if (dirty && !process.env.GHOSTEX_BUNDLE_ALLOW_DIRTY) {
   throw new Error("build:ghostex needs a clean checkout so the bundle names the commit it was built from");
 }
