@@ -195,6 +195,16 @@
   z-index: inherit;
 }
 
+// Ghostex: where Layout's palette hangs when the host hides the toolbar.
+.hostPaletteAnchor {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 256px;
+  z-index: 100000;
+  pointer-events: none;
+}
+
 .toolbar {
   width: 337px;
   font-family:

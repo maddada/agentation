@@ -878,6 +878,16 @@ $red: #ef4444;
       0 4px 16px rgba(0, 0, 0, 0.06),
       0 0 0 1px rgba(0, 0, 0, 0.04);
   }
+
+  // Ghostex: hung from the page's top right when the host hides the toolbar.
+  &.paletteTopRight {
+    top: 0;
+    right: 0;
+    bottom: auto;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    pointer-events: auto;
+  }
 }
 
 .paletteSection {

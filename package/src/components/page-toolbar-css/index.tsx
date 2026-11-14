@@ -371,10 +371,55 @@ export type PageFeedbackToolbarCSSProps = {
    * its 1-based picture number. Without it the output does not mention screenshots.
    */
   screenshotReference?: (annotation: Annotation, index: number) => string | null | undefined;
+  /**
+   * Ghostex: "hidden" draws no toolbar, so the host's own controls drive it through `onReady`'s
+   * controller. Marks, the hover outline, note popups and the Layout palette (at the page's top
+   * right) still draw; Esc and Cmd/Ctrl+Shift+F no longer switch feedback mode off or on, because
+   * the host owns that switch.
+   */
+  toolbar?: "floating" | "hidden";
+  /** Ghostex: mount already in feedback mode. */
+  defaultActive?: boolean;
+  /** Ghostex: follow the host's theme instead of the toolbar's own switch. */
+  theme?: "dark" | "light";
+  /** Ghostex: hands the host the controller once mounted. */
+  onReady?: (controller: AgentationController) => void;
+  /** Ghostex: called whenever something the host's controls show changes. */
+  onStateChange?: (state: AgentationState) => void;
+  /** Ghostex: the notes after every change (not their first load). */
+  onAnnotationsChange?: (annotations: Annotation[]) => void;
 };
 
 /** Alias for PageFeedbackToolbarCSSProps */
 export type AgentationProps = PageFeedbackToolbarCSSProps;
+
+/** Ghostex: what a host that draws its own controls (`toolbar: "hidden"`) shows for them. */
+export type AgentationState = {
+  active: boolean;
+  frozen: boolean;
+  layout: boolean;
+  marksVisible: boolean;
+  /** Notes that carry a numbered mark. */
+  notes: number;
+  canCopy: boolean;
+  canSend: boolean;
+  canClear: boolean;
+  sendState: "idle" | "sending" | "sent" | "failed";
+  settings: ToolbarSettings;
+};
+
+/** Ghostex: every toolbar button's action, for a host that draws its own controls. */
+export type AgentationController = {
+  setActive: (active: boolean) => void;
+  toggleFreeze: () => void;
+  toggleLayout: () => void;
+  setMarksVisible: (visible: boolean) => void;
+  copy: () => Promise<void>;
+  send: () => Promise<void>;
+  clearAll: () => void;
+  updateSettings: (patch: Partial<ToolbarSettings>) => void;
+  getState: () => AgentationState;
+};
 
 // =============================================================================
 // Component
@@ -382,7 +427,7 @@ export type AgentationProps = PageFeedbackToolbarCSSProps;
 
 export function PageFeedbackToolbarCSS(props: PageFeedbackToolbarCSSProps = {}) {
   const pathname = usePagePath(props.useHashLocation ?? false);
-  const activeState = useState(false);
+  const activeState = useState(props.defaultActive ?? false);
   const portalHost = useFeedbackPortal(props.portalContainer);
   if (!portalHost) return null;
   return createPortal(<PageFeedbackToolbarForRoute
@@ -422,6 +467,11 @@ function PageFeedbackToolbarForRoute({
   className: userClassName,
   captureScreenshots = true,
   screenshotReference,
+  toolbar: toolbarMode = "floating",
+  theme,
+  onReady,
+  onStateChange,
+  onAnnotationsChange,
 }: PageFeedbackToolbarCSSProps & {
   pathname: string;
   activeState: [boolean, Dispatch<SetStateAction<boolean>>];
@@ -881,7 +931,7 @@ function PageFeedbackToolbarForRoute({
 
     // Load saved theme preference, default to dark mode
     try {
-      const savedTheme = localStorage.getItem("feedback-toolbar-theme");
+      const savedTheme = theme ? null : localStorage.getItem("feedback-toolbar-theme");
       if (savedTheme !== null) {
         setIsDarkMode(savedTheme === "dark");
       }
@@ -914,9 +964,14 @@ function PageFeedbackToolbarForRoute({
     }
   }, [settings, mounted]);
 
+  // A host-given theme wins over the saved one.
+  useEffect(() => {
+    if (theme) setIsDarkMode(theme === "dark");
+  }, [theme]);
+
   // Save theme preference
   useEffect(() => {
-    if (mounted) {
+    if (mounted && !theme) {
       localStorage.setItem(
         "feedback-toolbar-theme",
         isDarkMode ? "dark" : "light",
@@ -3554,14 +3609,14 @@ function PageFeedbackToolbarForRoute({
         }
         if (pendingAnnotation || editingAnnotation) {
           // Let popup handle
-        } else if (isActive) {
+        } else if (isActive && toolbarMode !== "hidden") {
           hideTooltipsUntilMouseLeave();
           deactivate();
         }
       }
 
-      // Cmd+Shift+F / Ctrl+Shift+F to toggle feedback mode
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+      // Cmd+Shift+F / Ctrl+Shift+F to toggle feedback mode (a host that hides the toolbar owns the switch)
+      if (toolbarMode !== "hidden" && (e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
         e.preventDefault();
         hideTooltipsUntilMouseLeave();
         if (isActive) {
@@ -3650,6 +3705,7 @@ function PageFeedbackToolbarForRoute({
     return () => pageEvents.removeEventListener("keydown", handleKeyDown, capture);
   }, [
     enableKeyboardShortcuts,
+    toolbarMode,
     portalContainer,
     editingAnnotation,
     isActive,
@@ -3744,6 +3800,208 @@ function PageFeedbackToolbarForRoute({
     : isDesignMode && blankCanvas ? "Copy layout" : "Copy feedback";
   const controlTabIndex = isActive ? 0 : -1;
 
+  // Ghostex: a host that hides the toolbar drives it through this controller and draws this state.
+  const canCopyNow = !missingCopyMetadata && (isDesignMode && blankCanvas
+    ? designPlacements.length > 0 || !!rearrangeState?.sections?.length
+    : hasAnnotations || drawStrokes.length > 0 || designPlacements.length > 0 || !!rearrangeState?.sections?.length);
+  const canClearNow = hasAnnotations || drawStrokes.length > 0 || designPlacements.length > 0 || !!rearrangeState?.sections?.length;
+  const hostState: AgentationState = {
+    active: isActive,
+    frozen: isFrozen,
+    layout: isDesignMode,
+    marksVisible: showMarkers,
+    notes: markerAnnotations.length,
+    canCopy: canCopyNow,
+    canSend: hasAnnotations && canSend && sendState !== "sending",
+    canClear: canClearNow,
+    sendState,
+    settings,
+  };
+  const hostStateRef = useRef(hostState);
+  hostStateRef.current = hostState;
+  const hostActionsRef = useRef<Omit<AgentationController, "getState">>(null!);
+  hostActionsRef.current = {
+    setActive: (active) => {
+      if (active === isActive) return;
+      if (active) setIsActive(true);
+      else deactivate();
+    },
+    toggleFreeze,
+    toggleLayout: () => {
+      if (isDrawMode) setIsDrawMode(false);
+      if (pendingAnnotation) cancelAnnotation();
+      if (isDesignMode) closeDesignMode();
+      else openDesignMode();
+    },
+    setMarksVisible: (visible) => setShowMarkers(visible),
+    copy: () => (canCopyNow ? copyOutput() : Promise.resolve()),
+    send: () => (hasAnnotations && canSend && sendState === "idle" ? sendToWebhook() : Promise.resolve()),
+    clearAll: () => {
+      clearAll();
+      if (designPlacements.length > 0) setDesignPlacements([]);
+      if (rearrangeState) setRearrangeState(null);
+    },
+    updateSettings,
+  };
+  const hostStateKey = JSON.stringify(hostState);
+  useEffect(() => {
+    if (mounted) onStateChange?.(hostStateRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostStateKey, mounted]);
+  useEffect(() => {
+    if (!mounted || !onReady) return;
+    onReady({
+      setActive: (active) => hostActionsRef.current.setActive(active),
+      toggleFreeze: () => hostActionsRef.current.toggleFreeze(),
+      toggleLayout: () => hostActionsRef.current.toggleLayout(),
+      setMarksVisible: (visible) => hostActionsRef.current.setMarksVisible(visible),
+      copy: () => hostActionsRef.current.copy(),
+      send: () => hostActionsRef.current.send(),
+      clearAll: () => hostActionsRef.current.clearAll(),
+      updateSettings: (patch) => hostActionsRef.current.updateSettings(patch),
+      getState: () => hostStateRef.current,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+  const annotationsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!mounted) return;
+    if (!annotationsLoadedRef.current) {
+      annotationsLoadedRef.current = true;
+      return;
+    }
+    onAnnotationsChange?.(annotations);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotations]);
+  const hiddenToolbar = toolbarMode === "hidden";
+  const designPalette = (
+    <DesignPalette
+      placement={hiddenToolbar ? "topRight" : "above"}
+      visible={isDesignMode && isActive}
+      activeType={activeDesignComponent}
+      onSelect={(type) => {
+        setActiveDesignComponent(activeDesignComponent === type ? null : type);
+      }}
+      isDarkMode={isDarkMode}
+      sectionCount={rearrangeState?.sections.length ?? 0}
+      onDetectSections={() => {
+        const sections = detectPageSections();
+        const existing = rearrangeState?.sections ?? [];
+        const existingSelectors = new Set(existing.map(s => s.selector));
+        const newSections = sections.filter(s => !existingSelectors.has(s.selector));
+        const merged = [...existing, ...newSections];
+        const mergedOrder = [...(rearrangeState?.originalOrder ?? []), ...newSections.map(s => s.id)];
+        setRearrangeState({
+          sections: merged,
+          originalOrder: mergedOrder,
+          detectedAt: Date.now(),
+        });
+      }}
+      placementCount={designPlacements.length}
+      onClearPlacements={() => {
+        clearLayout(designPlacements, rearrangeState);
+      }}
+      blankCanvas={blankCanvas}
+      onBlankCanvasChange={(on) => {
+        const emptyRearrange = { sections: [], originalOrder: [], detectedAt: Date.now() };
+        if (on) {
+          // Entering wireframe: stash all explore state, restore wireframe state
+          exploreStashRef.current = { rearrange: rearrangeState, placements: designPlacements };
+          setRearrangeState(wireframeStashRef.current.rearrange || emptyRearrange);
+          setDesignPlacements(wireframeStashRef.current.placements);
+          setActiveDesignComponent(null);
+        } else {
+          // Leaving wireframe: stash all wireframe state, restore explore state
+          wireframeStashRef.current = { rearrange: rearrangeState, placements: designPlacements };
+          setRearrangeState(exploreStashRef.current.rearrange || emptyRearrange);
+          setDesignPlacements(exploreStashRef.current.placements);
+        }
+        setBlankCanvas(on);
+      }}
+      wireframePurpose={wireframePurpose}
+      onWireframePurposeChange={setWireframePurpose}
+      Tooltip={HelpTooltip}
+      onDragStart={(type, e) => {
+        e.preventDefault();
+        const def = DEFAULT_SIZES[type];
+        let preview: HTMLDivElement | null = null;
+        let didDrag = false;
+        const startX = e.clientX;
+        const startY = e.clientY;
+
+        // Find toolbar bottom for distance-based scaling
+        const toolbar = (e.target as HTMLElement).closest("[data-feedback-toolbar]");
+        const toolbarTop = toolbar?.getBoundingClientRect().top ?? window.innerHeight;
+
+        const onMove = (ev: MouseEvent) => {
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+
+          if (!didDrag && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+            didDrag = true;
+            preview = document.createElement("div");
+            preview.className = `${designStyles.dragPreview}${blankCanvas ? ` ${designStyles.dragPreviewWireframe}` : ""}`;
+            portalWrapperRef.current?.appendChild(preview);
+          }
+
+          if (!preview) return;
+
+          // Scale up as cursor moves away from toolbar
+          // With the palette at the top right, growth follows the drag distance instead.
+              const dist = hiddenToolbar ? Math.hypot(dx, dy) : Math.max(0, toolbarTop - ev.clientY);
+          const progress = Math.min(1, dist / 180);
+          const eased = 1 - Math.pow(1 - progress, 2); // ease-out
+
+          const minW = 28;
+          const minH = 20;
+          const maxW = Math.min(140, def.width * 0.18);
+          const maxH = Math.min(90, def.height * 0.18);
+          const w = minW + (maxW - minW) * eased;
+          const h = minH + (maxH - minH) * eased;
+
+          preview.style.width = `${w}px`;
+          preview.style.height = `${h}px`;
+          preview.style.left = `${ev.clientX - w / 2}px`;
+          preview.style.top = `${ev.clientY - h / 2}px`;
+          preview.style.opacity = `${0.5 + 0.5 * eased}`;
+          preview.textContent = eased > 0.25 ? type : "";
+        };
+
+        const onUp = (ev: MouseEvent) => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+          if (preview) preview.remove();
+
+          if (didDrag) {
+            const w = def.width;
+            const h = def.height;
+            const scrollY = window.scrollY;
+            const x = Math.max(0, ev.clientX - w / 2);
+            const y = Math.max(0, ev.clientY + scrollY - h / 2);
+            const placement: DesignPlacement = {
+              id: `dp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              type,
+              x,
+              y,
+              width: w,
+              height: h,
+              scrollY,
+              timestamp: Date.now(),
+            };
+            setDesignPlacements((prev) => [...prev, placement]);
+            setActiveDesignComponent(null);
+            // Deselect any previously selected placements
+            designSelectedIdsRef.current = new Set();
+            setDesignDeselectSignal(n => n + 1);
+          }
+        };
+
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      }}
+    />
+  );
+
   if (!mounted) return null;
   if (isToolbarHidden) return null;
 
@@ -3751,7 +4009,13 @@ function PageFeedbackToolbarForRoute({
     <ShadowRoot host="agentation-toolbar" className={userClassName}>
       <style data-agentation-styles="toolbar">{shadowCss}{agentationColorTokensCss}</style>
       <div ref={portalWrapperRef} className={styles.positionContext} style={{ display: "contents" }} data-agentation-theme={isDarkMode ? "dark" : "light"} data-agentation-accent={settings.annotationColorId} data-agentation-root="">
-          {/* Toolbar */}
+          {/* Toolbar (a host that hides it draws its own controls; Layout's palette then sits at the top right) */}
+          {hiddenToolbar && (
+            <div className={styles.hostPaletteAnchor} data-feedback-toolbar>
+              {designPalette}
+            </div>
+          )}
+          {!hiddenToolbar && (
           <div
             className={styles.toolbar}
             data-feedback-toolbar
@@ -4053,129 +4317,7 @@ function PageFeedbackToolbarForRoute({
               </div>
 
               {/* Layout Mode Palette */}
-              <DesignPalette
-                visible={isDesignMode && isActive}
-                activeType={activeDesignComponent}
-                onSelect={(type) => {
-                  setActiveDesignComponent(activeDesignComponent === type ? null : type);
-                }}
-                isDarkMode={isDarkMode}
-                sectionCount={rearrangeState?.sections.length ?? 0}
-                onDetectSections={() => {
-                  const sections = detectPageSections();
-                  const existing = rearrangeState?.sections ?? [];
-                  const existingSelectors = new Set(existing.map(s => s.selector));
-                  const newSections = sections.filter(s => !existingSelectors.has(s.selector));
-                  const merged = [...existing, ...newSections];
-                  const mergedOrder = [...(rearrangeState?.originalOrder ?? []), ...newSections.map(s => s.id)];
-                  setRearrangeState({
-                    sections: merged,
-                    originalOrder: mergedOrder,
-                    detectedAt: Date.now(),
-                  });
-                }}
-                placementCount={designPlacements.length}
-                onClearPlacements={() => {
-                  clearLayout(designPlacements, rearrangeState);
-                }}
-                blankCanvas={blankCanvas}
-                onBlankCanvasChange={(on) => {
-                  const emptyRearrange = { sections: [], originalOrder: [], detectedAt: Date.now() };
-                  if (on) {
-                    // Entering wireframe: stash all explore state, restore wireframe state
-                    exploreStashRef.current = { rearrange: rearrangeState, placements: designPlacements };
-                    setRearrangeState(wireframeStashRef.current.rearrange || emptyRearrange);
-                    setDesignPlacements(wireframeStashRef.current.placements);
-                    setActiveDesignComponent(null);
-                  } else {
-                    // Leaving wireframe: stash all wireframe state, restore explore state
-                    wireframeStashRef.current = { rearrange: rearrangeState, placements: designPlacements };
-                    setRearrangeState(exploreStashRef.current.rearrange || emptyRearrange);
-                    setDesignPlacements(exploreStashRef.current.placements);
-                  }
-                  setBlankCanvas(on);
-                }}
-                wireframePurpose={wireframePurpose}
-                onWireframePurposeChange={setWireframePurpose}
-                Tooltip={HelpTooltip}
-                onDragStart={(type, e) => {
-                  e.preventDefault();
-                  const def = DEFAULT_SIZES[type];
-                  let preview: HTMLDivElement | null = null;
-                  let didDrag = false;
-                  const startX = e.clientX;
-                  const startY = e.clientY;
-
-                  // Find toolbar bottom for distance-based scaling
-                  const toolbar = (e.target as HTMLElement).closest("[data-feedback-toolbar]");
-                  const toolbarTop = toolbar?.getBoundingClientRect().top ?? window.innerHeight;
-
-                  const onMove = (ev: MouseEvent) => {
-                    const dx = ev.clientX - startX;
-                    const dy = ev.clientY - startY;
-
-                    if (!didDrag && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-                      didDrag = true;
-                      preview = document.createElement("div");
-                      preview.className = `${designStyles.dragPreview}${blankCanvas ? ` ${designStyles.dragPreviewWireframe}` : ""}`;
-                      portalWrapperRef.current?.appendChild(preview);
-                    }
-
-                    if (!preview) return;
-
-                    // Scale up as cursor moves away from toolbar
-                    const dist = Math.max(0, toolbarTop - ev.clientY);
-                    const progress = Math.min(1, dist / 180);
-                    const eased = 1 - Math.pow(1 - progress, 2); // ease-out
-
-                    const minW = 28;
-                    const minH = 20;
-                    const maxW = Math.min(140, def.width * 0.18);
-                    const maxH = Math.min(90, def.height * 0.18);
-                    const w = minW + (maxW - minW) * eased;
-                    const h = minH + (maxH - minH) * eased;
-
-                    preview.style.width = `${w}px`;
-                    preview.style.height = `${h}px`;
-                    preview.style.left = `${ev.clientX - w / 2}px`;
-                    preview.style.top = `${ev.clientY - h / 2}px`;
-                    preview.style.opacity = `${0.5 + 0.5 * eased}`;
-                    preview.textContent = eased > 0.25 ? type : "";
-                  };
-
-                  const onUp = (ev: MouseEvent) => {
-                    window.removeEventListener("mousemove", onMove);
-                    window.removeEventListener("mouseup", onUp);
-                    if (preview) preview.remove();
-
-                    if (didDrag) {
-                      const w = def.width;
-                      const h = def.height;
-                      const scrollY = window.scrollY;
-                      const x = Math.max(0, ev.clientX - w / 2);
-                      const y = Math.max(0, ev.clientY + scrollY - h / 2);
-                      const placement: DesignPlacement = {
-                        id: `dp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                        type,
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                        scrollY,
-                        timestamp: Date.now(),
-                      };
-                      setDesignPlacements((prev) => [...prev, placement]);
-                      setActiveDesignComponent(null);
-                      // Deselect any previously selected placements
-                      designSelectedIdsRef.current = new Set();
-                      setDesignDeselectSignal(n => n + 1);
-                    }
-                  };
-
-                  window.addEventListener("mousemove", onMove);
-                  window.addEventListener("mouseup", onUp);
-                }}
-              />
+              {!hiddenToolbar && designPalette}
 
               <SettingsPanel
                 settings={settings}
@@ -4194,6 +4336,7 @@ function PageFeedbackToolbarForRoute({
               />
             </div>
           </div>
+          )}
 
           {/* Blank canvas backdrop — stays mounted so opacity transition works on open/close */}
           {(isDesignMode || designOverlayExiting) && (

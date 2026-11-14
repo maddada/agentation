@@ -756,6 +756,8 @@ type DesignPaletteProps = {
   wireframePurpose: string;
   onWireframePurposeChange: (purpose: string) => void;
   Tooltip?: React.ComponentType<{ content: string; children: React.ReactNode }>;
+  /** Ghostex: "topRight" hangs the palette from the page's top right, for a host that hides the toolbar. */
+  placement?: "above" | "topRight";
 };
 
 export function DesignPalette({
@@ -773,6 +775,7 @@ export function DesignPalette({
   onBlankCanvasChange,
   wireframePurpose,
   onWireframePurposeChange,
+  placement = "above",
   Tooltip,
 }: DesignPaletteProps) {
   const { ref: panelRef, mounted } = usePanelPresence(visible, { onExited });
@@ -833,7 +836,7 @@ export function DesignPalette({
 
   return (
     <div
-      className={`${styles.palette} ${!isDarkMode ? styles.light : ""}`}
+      className={`${styles.palette} ${placement === "topRight" ? styles.paletteTopRight : ""} ${!isDarkMode ? styles.light : ""}`}
       ref={(node) => { panelRef.current = node; node?.toggleAttribute("inert", !visible); }}
       aria-hidden={!visible}
       data-feedback-toolbar
